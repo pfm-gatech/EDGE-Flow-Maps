@@ -1,0 +1,9 @@
+logs
+__pycache__
+.vscode/
+*.mp4
+*.png
+*.ps1
+.*.py
+_ticache/
+assets/
