@@ -41,8 +41,12 @@ Available cases:
 - case 0: Leapfrogging Vortices
 - case 1: Four Vortices Collision
 - case 2: Delta Wing
+- case 3: Ink Torus
+- case 4: Dye Drift
 
 Results would be saved in the `logs\` directory. We use [ParaView](https://www.paraview.org/) for data visualization.
+
+Note: Taichi may take a while to compile kernels. Please be patient.
 
 ## Citation
 

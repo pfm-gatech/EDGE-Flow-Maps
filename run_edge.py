@@ -11,6 +11,9 @@ from sim.mgpcg_solid import *
 from sim.init_conditions import *
 from sim.hermite import *
 
+from sim.lp import *
+from sim.lp_init import *
+
 parser = argparse.ArgumentParser()
 parser.add_argument("-n", "--name", help="Experiment name")
 parser.add_argument("-c", "--case", help="Demo case number. If you want to pass them from the command line, use -1",
@@ -35,6 +38,7 @@ if case == 0:
     real_t = ti.f32
     exp_name = "leapfrog-edge"
     ed_eps = 0.01 * dx
+    lp = False
     solid = False
 elif case == 1:
     init_condition = "fourvorts"
@@ -52,6 +56,7 @@ elif case == 1:
     real_t = ti.f32
     exp_name = "fourvorts-edge"
     ed_eps = 0.025 * dx
+    lp = False
     solid = False
 elif case == 2:
     init_condition = "delta"
@@ -69,8 +74,75 @@ elif case == 2:
     real_t = ti.f32
     exp_name = "delta-edge"
     ed_eps = 0.02 * dx
+    lp = False
     solid = True
     set_bm = set_boundary_mask_delta
+elif case == 3:
+    init_condition = "inkcircle"
+    res_x = 128
+    res_y = 256
+    res_z = 128
+
+    domain_range_y = 256.0
+    domain_range_x = domain_range_y/res_y*res_x
+    domain_range_z = domain_range_y/res_y*res_z
+    dx = domain_range_y/res_y
+    Re = 5.5
+    St = 6.6e-5
+    gravity = 1
+    density_ratio = 2.0/3
+    epiral_radius_ratio = 35
+    laden_particles_max_num = 1000000
+    compute_ratio = 1
+    laden_particles_init_num = int(laden_particles_max_num/compute_ratio**3)
+    laden_radius = 0.01
+    compute_laden_radius = compute_ratio*laden_radius
+
+    visualize_dt = 10
+    reinit_every = 60
+    ckpt_every = 100
+    CFL = 0.25
+    from_frame = 0
+    total_frames = 300
+    BFECC_clamp = True
+    real_t = ti.f32
+    exp_name = "ink-edge"
+    ed_eps = 0.02 * dx
+    lp = True
+    solid = False
+elif case == 4:
+    init_condition = "inkdrop"
+    res_x = 256
+    res_y = 512
+    res_z = 256
+
+    domain_range_y = 256.0
+    domain_range_x = domain_range_y/res_y*res_x
+    domain_range_z = domain_range_y/res_y*res_z
+    dx = domain_range_y/res_y
+    Re = 1000
+    St = 5e-5
+    gravity = 1
+    density_ratio = 0.6
+    epiral_radius_ratio = 35
+    laden_particles_max_num = 4000000
+    compute_ratio = 1
+    laden_particles_init_num = int(laden_particles_max_num/compute_ratio**3)
+    laden_radius = 0.01
+    compute_laden_radius = compute_ratio*laden_radius
+
+    visualize_dt = 10
+    reinit_every = 80
+    ckpt_every = 1
+    CFL = 0.25
+    from_frame = 0
+    total_frames = 120
+    BFECC_clamp = True
+    real_t = ti.f32
+    exp_name = "inkdrop-edge"
+    ed_eps = 0.02 * dx
+    lp = True
+    solid = False
 
 if args.name is None:
     exp_name += datetime.now().strftime("-%Y-%m-%d-%H-%M-%S")
@@ -159,6 +231,44 @@ dT_x_tmp = ti.Vector.field(3, float, shape=(res_x, res_y, res_z))
 dT_y_tmp = ti.Vector.field(3, float, shape=(res_x, res_y, res_z))
 dT_z_tmp = ti.Vector.field(3, float, shape=(res_x, res_y, res_z))
 
+if lp:
+    laden_particles_pos = ti.Vector.field(
+        3, float, shape=laden_particles_max_num)
+    laden_particles_vel = ti.Vector.field(
+        3, float, shape=laden_particles_max_num)
+    laden_particles_vel_tem = ti.Vector.field(
+        3, float, shape=laden_particles_max_num)
+    laden_particles_vel_diff = ti.Vector.field(
+        3, float, shape=laden_particles_max_num)
+    laden_particles_acc = ti.Vector.field(
+        3, float, shape=laden_particles_max_num)
+    drag_x = ti.field(float, shape=(res_x + 1, res_y, res_z))
+    drag_y = ti.field(float, shape=(res_x, res_y + 1, res_z))
+    drag_z = ti.field(float, shape=(res_x, res_y, res_z + 1))
+    vis_x = ti.field(float, shape=(res_x + 1, res_y, res_z))
+    vis_y = ti.field(float, shape=(res_x, res_y + 1, res_z))
+    vis_z = ti.field(float, shape=(res_x, res_y, res_z + 1))
+
+    laden_particle_num = ti.field(int, shape=())
+    laden_particle_num[None] = laden_particles_init_num
+    laden_particle_ref_radius = ti.field(float, shape=laden_particles_max_num)
+
+
+@ti.kernel
+def calc_max_particle_speed(u: ti.template()):
+    max_speed2[None] = 1.0e-3
+    for I in ti.grouped(u):
+        ti.atomic_max(max_speed2[None], u[I].norm())
+
+
+def write_w_and_laden_particles(pos, outdir, i, laden_particle_num):
+    write_to_vtks_lp(
+        pos.to_numpy()[:laden_particle_num, :],
+        scalar_data={},
+        vector_data={},
+        file_path=os.path.join(outdir, "field_{:03d}".format(i)),
+    )
+
 memory_usage = sum_memory_usage([
     psi_garm, T_x_garm, T_y_garm, T_z_garm,
     dT_x_garm, dT_y_garm, dT_z_garm,
@@ -171,6 +281,12 @@ memory_usage += sum_memory_usage([
     u_x, u_y, u_z, init_u_x, init_u_y, init_u_z,
     err_u_x, err_u_y, err_u_z, tmp_u_x, tmp_u_y, tmp_u_z,
 ])
+if lp:
+    memory_usage += sum_memory_usage([
+        laden_particles_pos, laden_particles_vel, laden_particles_vel_tem, laden_particles_vel_diff, laden_particles_acc,
+        drag_x, drag_y, drag_z, vis_x, vis_y, vis_z,
+        laden_particle_num, laden_particle_ref_radius
+    ])
 if solid:
     memory_usage += sum_memory_usage([boundary_mask, boundary_vel])
 memory_usage += solver.get_memory_usage()
@@ -407,6 +523,10 @@ def main(from_frame=0):
     ti.sync()
     runtime0 = time.time()
 
+    if lp:
+        particle_vtkdir = "particle"
+        particle_vtkdir = os.path.join(logsdir, particle_vtkdir)
+        os.makedirs(particle_vtkdir, exist_ok=True)
     vtkdir = "vtks"
     vtkdir = os.path.join(logsdir, vtkdir)
     os.makedirs(vtkdir, exist_ok=True)
@@ -426,6 +546,14 @@ def main(from_frame=0):
             init_delta(X, u, smoke, tmp_smoke)
             split_central_vector(u, u_x, u_y, u_z)
             set_bm(X, boundary_mask, boundary_vel, 0, dx)
+        elif init_condition == "inkcircle":
+            ink_init_case0(laden_particles_pos, laden_particles_vel, laden_particle_num, u,
+                           X, drag_x, drag_y, drag_z, laden_particle_ref_radius, compute_laden_radius)
+            split_central_vector(u, u_x, u_y, u_z)
+        elif init_condition == "inkdrop":
+            ink_init_case1(laden_particles_pos, laden_particles_vel, laden_particle_num, u,
+                           X, drag_x, drag_y, drag_z, laden_particle_ref_radius, compute_laden_radius)
+            split_central_vector(u, u_x, u_y, u_z)
         solver.Poisson(u_x, u_y, u_z)
     else:
         u_x.from_numpy(np.load(os.path.join(
@@ -465,7 +593,12 @@ def main(from_frame=0):
 
         # determine dt
         calc_max_speed(u_x, u_y, u_z)  # saved to max_speed[None]
-        curr_dt = CFL * dx / max_speed[None]
+        if lp:
+            calc_max_particle_speed(laden_particles_vel)
+            curr_dt = min(
+                CFL * dx / max_speed[None], CFL * dx / max_speed2[None])
+        else:
+            curr_dt = CFL * dx / max_speed[None]
         if sub_t+curr_dt >= visualize_dt:  # if over
             curr_dt = visualize_dt-sub_t
             sub_t = 0.  # empty sub_t
@@ -491,6 +624,22 @@ def main(from_frame=0):
             init_smoke.copy_from(smoke)
             num_reinits += 1
 
+        if lp:
+            update_particles_acc(u_x, u_y, u_z, laden_particles_vel, laden_particles_pos,
+                                 laden_particles_acc, dx, curr_dt, laden_particle_num[None], St, gravity)
+            update_particles_velocity(laden_particles_acc, laden_particles_vel, laden_particles_pos,
+                                      curr_dt, dx, laden_particle_num[None], domain_range_x, domain_range_y, domain_range_z)
+            calculate_velocity_diff(u_x, u_y, u_z, laden_particles_vel, laden_particles_vel_diff,
+                                    laden_particles_pos, dx, laden_particle_num[None], St, density_ratio, epiral_radius_ratio)
+            laden_particles_back_with_computing_particle(drag_x, drag_y, drag_z, u_x, u_y, u_z, laden_particles_vel,
+                                                         laden_particles_vel_diff, laden_particles_pos, laden_particle_ref_radius, dx, laden_particle_num[None], laden_radius, domain_range_x, domain_range_y, domain_range_z, res_x, res_y, res_z)
+            update_particles_position(laden_particles_vel, laden_particles_pos, curr_dt,
+                                      laden_particle_num[None], domain_range_x, domain_range_y, domain_range_z)
+            calculate_viscous_force(u_x, u_y, u_z, vis_x, vis_y, vis_z, dx, Re)
+            add_fields(vis_x, drag_x, vis_x, 1.0)
+            add_fields(vis_y, drag_y, vis_y, 1.0)
+            add_fields(vis_z, drag_z, vis_z, 1.0)
+
         if init_condition == "delta":
             smoke.fill(0.0)
             emit_smoke_delta(X, smoke)
@@ -509,6 +658,13 @@ def main(from_frame=0):
         SimpleTimer.start("advect")
         march_psi_grid(curr_dt)
         march_phi_grid(curr_dt)
+
+        if lp:
+            map_u(vis_x, vis_y, vis_z, tmp_u_x, tmp_u_y, tmp_u_z,
+                  F_x, F_y, F_z, phi_x, phi_y, phi_z, dx)
+            add_fields(init_u_x, tmp_u_x, init_u_x, curr_dt)
+            add_fields(init_u_y, tmp_u_y, init_u_y, curr_dt)
+            add_fields(init_u_z, tmp_u_z, init_u_z, curr_dt)
 
         map_u_psi(init_u_x, init_u_y, init_u_z, u_x, u_y, u_z, dx)
         map_smoke_psi(init_smoke, smoke, dx)
@@ -545,7 +701,13 @@ def main(from_frame=0):
 
         SimpleTimer.stop("advect", 5)
 
-        solver.Poisson(u_x, u_y, u_z)
+        if lp:
+            vis_x.fill(0.0)
+            vis_y.fill(0.0)
+            vis_z.fill(0.0)
+            solver.Poisson_with_buffer(u_x, u_y, u_z, vis_x, vis_y, vis_z)
+        else:
+            solver.Poisson(u_x, u_y, u_z)
 
         SimpleTimer.stop("substep", 5)
 
@@ -562,6 +724,9 @@ def main(from_frame=0):
             w_norm = np.linalg.norm(w_numpy, axis=-1)
             smoke_numpy = smoke.to_numpy()
             write_vtks_4channel_smoke(w_norm, smoke_numpy, vtkdir, frame_idx)
+            if lp:
+                write_w_and_laden_particles(
+                    laden_particles_pos, particle_vtkdir, frame_idx, laden_particle_num[None])
 
             if frame_idx % ckpt_every == 0:
                 np.save(os.path.join(ckptdir, "vel_x_numpy_" +

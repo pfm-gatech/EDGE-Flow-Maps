@@ -78,3 +78,64 @@ def write_vtks_4channel_smoke(w_numpy, smoke_numpy, outdir, i):
 def split_array(data):
     x, y, z = np.copy(data[:, 0]), np.copy(data[:, 1]), np.copy(data[:, 2])
     return x, y, z
+
+
+def write_to_vtks_lp(pos, scalar_data, vector_data, file_path):
+    # here points is regarded as unstructure-grid
+    w = VtkFile(file_path, VtkUnstructuredGrid)
+    npoints = pos.shape[0]
+
+    w.openGrid()
+    w.openPiece(ncells=npoints, npoints=npoints)
+
+    # add points
+    w.openElement("Points")
+    x, y, z = split_array(pos)
+    w.addData("points", (x, y, z))
+    w.closeElement("Points")
+
+    # add cell, now the cell is meaning less
+    w.openElement("Cells")
+    # index of last node in each cell
+    offsets = np.arange(start=1, stop=npoints + 1, dtype='int32')
+    # each point is only connected to itself
+    connectivity = np.arange(npoints, dtype='int32')
+    cell_types = np.empty(npoints, dtype='uint8')
+    cell_types[:] = VtkVertex.tid
+    w.addData("connectivity", connectivity)
+    w.addData("offsets", offsets)
+    w.addData("types", cell_types)
+    w.closeElement("Cells")
+
+    # add data
+    scalar_keys = sorted(list(scalar_data.keys()))
+    vector_keys = sorted(list(vector_data.keys()))
+    if (len(scalar_keys) > 0 and len(vector_keys) > 0):
+        w.openData("Point", scalars=scalar_keys[0], vectors=vector_keys[0])
+    elif (len(scalar_keys) > 0):
+        w.openData("Point", scalars=scalar_keys[0])
+    elif (len(vector_keys) > 0):
+        w.openData("Point", vectors=vector_keys[0])
+    else:
+        w.openData("Point", scalars="scalar")
+    for key in scalar_keys:
+        data = scalar_data[key]
+        w.addData(key, data)
+    for key in vector_keys:
+        data = vector_data[key]
+        vx, vy, vz = split_array(data)
+        w.addData(key, (vx, vy, vz))
+    w.closeData("Point")
+    w.closePiece()
+    w.closeGrid()
+
+    w.appendData((x, y, z))
+    w.appendData(connectivity).appendData(offsets).appendData(cell_types)
+    for key in scalar_keys:
+        data = scalar_data[key]
+        w.appendData(data)
+    for key in vector_keys:
+        data = vector_data[key]
+        vx, vy, vz = split_array(data)
+        w.appendData((vx, vy, vz))
+    w.save()
